@@ -15,21 +15,26 @@ import (
 	"github.com/xitongsys/parquet-go/reader"
 )
 
+// TODO: In Go, there is no way to check if a channel has been closed
+// will need better error-handling on SendValue to catch the panic() in case the channel is closed
+
 // Generic information about a partition
 type Partition interface {
 	CloseChannel()
 	ReadAllValues() chan interface{} // a convenience function for passing through all values from the channel
-	ReadValue() (interface{}, bool)  // a convenience function for reading the value as an interface. Must ensure no other operation is reading from the channel
+	ReadValue() (interface{}, bool)  // a convenience function for reading the value as an interface. (Dangerous) Must ensure no other operation is reading from the channel
 	SendValue(interface{}) error     // a way to send a value on the channel
 }
 
 // The specific type of partition
 type PartitionFloat64 struct {
-	Ch chan float64
+	Ch       chan float64
+	IsClosed bool
 }
 
 func (p *PartitionFloat64) CloseChannel() {
 	close(p.Ch)
+	p.IsClosed = true
 }
 
 func (p *PartitionFloat64) ReadAllValues() chan interface{} {
@@ -49,19 +54,23 @@ func (p *PartitionFloat64) ReadValue() (interface{}, bool) {
 	return i, ok
 }
 
-func (p *PartitionFloat64) SendValue() error {
-
-	var i interface{}
-	i, ok := <-p.Ch
-	return i, ok
+func (p *PartitionFloat64) SendValue(val interface{}) error {
+	v, ok := val.(float64)
+	if !ok {
+		return fmt.Errorf("invalid type: expected float64, received %T", val)
+	}
+	p.Ch <- v
+	return nil
 }
 
 type PartitionTime struct {
-	Ch chan time.Time
+	Ch       chan time.Time
+	IsClosed bool
 }
 
 func (p *PartitionTime) CloseChannel() {
 	close(p.Ch)
+	p.IsClosed = true
 }
 
 func (p *PartitionTime) ReadAllValues() chan interface{} {
@@ -81,12 +90,23 @@ func (p *PartitionTime) ReadValue() (interface{}, bool) {
 	return i, ok
 }
 
+func (p *PartitionTime) SendValue(val interface{}) error {
+	v, ok := val.(time.Time)
+	if !ok {
+		return fmt.Errorf("invalid type: expected time.Time, received %T", val)
+	}
+	p.Ch <- v
+	return nil
+}
+
 type PartitionString struct {
-	Ch chan string
+	Ch       chan string
+	IsClosed bool
 }
 
 func (p *PartitionString) CloseChannel() {
 	close(p.Ch)
+	p.IsClosed = true
 }
 
 func (p *PartitionString) ReadAllValues() chan interface{} {
@@ -106,12 +126,23 @@ func (p *PartitionString) ReadValue() (interface{}, bool) {
 	return i, ok
 }
 
+func (p *PartitionString) SendValue(val interface{}) error {
+	v, ok := val.(string)
+	if !ok {
+		return fmt.Errorf("invalid type: expected string, received %T", val)
+	}
+	p.Ch <- v
+	return nil
+}
+
 type PartitionBool struct {
-	Ch chan bool
+	Ch       chan bool
+	IsClosed bool
 }
 
 func (p *PartitionBool) CloseChannel() {
 	close(p.Ch)
+	p.IsClosed = true
 }
 
 func (p *PartitionBool) ReadAllValues() chan interface{} {
@@ -125,18 +156,29 @@ func (p *PartitionBool) ReadAllValues() chan interface{} {
 	return c
 }
 
-func (p *PartitionBool) GetReadValue() (interface{}, bool) {
+func (p *PartitionBool) ReadValue() (interface{}, bool) {
 	var i interface{}
 	i, ok := <-p.Ch
 	return i, ok
 }
 
+func (p *PartitionBool) SendValue(val interface{}) error {
+	v, ok := val.(bool)
+	if !ok {
+		return fmt.Errorf("invalid type: expected bool, received %T", val)
+	}
+	p.Ch <- v
+	return nil
+}
+
 type PartitionInterface struct {
-	Ch chan interface{}
+	Ch       chan interface{}
+	IsClosed bool
 }
 
 func (p *PartitionInterface) CloseChannel() {
 	close(p.Ch)
+	p.IsClosed = true
 }
 
 func (p *PartitionInterface) ReadAllValues() chan interface{} {
@@ -155,6 +197,11 @@ func (p *PartitionInterface) ReadValue() (interface{}, bool) {
 	return val, ok
 }
 
+func (p *PartitionInterface) SendValue(val interface{}) error {
+	p.Ch <- val
+	return nil
+}
+
 // type DHDColumn struct {
 // 	ch                 interface{}
 // 	primitiveType      string
@@ -166,7 +213,6 @@ func (p *PartitionInterface) ReadValue() (interface{}, bool) {
 func convertToTime(v interface{}) time.Time {
 	var t time.Time
 	if val, ok := v.(int64); ok {
-		fmt.Printf("Time value: %d\n", val/1000)
 		t = time.Unix(val/1000, 0)
 	} else {
 		log.Println("Error converting to time, invalid input type")
@@ -386,7 +432,7 @@ func ReadColumnsFromParquet(f string, cols []string, nr int64, chunkSize int64) 
 			}
 			wg.Wait() // wait for all channels to receive their chunk before moving on
 			i += int64(numRowsRead)
-			fmt.Printf("Rows offset: %d, rows read: %d, rows remaining: %d\n", i, numRowsRead, nr-i)
+			// fmt.Printf("Rows offset: %d, rows read: %d, rows remaining: %d\n", i, numRowsRead, nr-i)
 		}
 		pr.ReadStop()
 		fr.Close()

@@ -17,17 +17,17 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 			return false
 		}
 		switch o {
-		case 0:
+		case Eq:
 			return s == v
-		case 1:
+		case Neq:
 			return s != v
-		case 2:
+		case Lt:
 			return s < v
-		case 3:
+		case Lte:
 			return s <= v
-		case 4:
+		case Gt:
 			return s > v
-		case 5:
+		case Gte:
 			return s >= v
 		default:
 			return false
@@ -38,17 +38,17 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 			return false
 		}
 		switch o {
-		case 0:
+		case Eq:
 			return f == v
-		case 1:
+		case Neq:
 			return f != v
-		case 2:
+		case Lt:
 			return f < v
-		case 3:
+		case Lte:
 			return f <= v
-		case 4:
+		case Gt:
 			return f > v
-		case 5:
+		case Gte:
 			return f >= v
 		default:
 			return false
@@ -59,9 +59,9 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 			return false
 		}
 		switch o {
-		case 0:
+		case Eq:
 			return b == v
-		case 1:
+		case Neq:
 			return b != v
 		default:
 			return false
@@ -72,17 +72,17 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 			return false
 		}
 		switch o {
-		case 0:
+		case Eq:
 			return t == v
-		case 1:
+		case Neq:
 			return t != v
-		case 2:
+		case Lt:
 			return t.Before(v)
-		case 3:
+		case Lte:
 			return t == v || t.Before(v)
-		case 4:
+		case Gt:
 			return t.After(v)
-		case 5:
+		case Gte:
 			return t == v || t.After(v)
 		default:
 			return false
@@ -103,27 +103,27 @@ type Condition struct {
 type Operation int
 
 const (
-	eq Operation = iota
-	neq
-	lt
-	lte
-	gt
-	gte
+	Eq Operation = iota
+	Neq
+	Lt
+	Lte
+	Gt
+	Gte
 )
 
 func (o Operation) String() string {
 	switch o {
-	case eq:
+	case Eq:
 		return "equal"
-	case neq:
+	case Neq:
 		return "not equal"
-	case lt:
+	case Lt:
 		return "less than"
-	case lte:
+	case Lte:
 		return "less than or equal to"
-	case gt:
+	case Gt:
 		return "greater than"
-	case gte:
+	case Gte:
 		return "greater than or equal to"
 	default:
 		return "<unknown operation>"
@@ -137,7 +137,7 @@ func (o Operation) String() string {
 
 // Filter returns the same number of partitions, but only the values that satisfy the predicate are
 // pushed to the partition
-func Filter(pars []p.Partition, conditions []Condition) ([]p.Partition, error) {
+func Filter(pars []p.Partition, conditions ...Condition) ([]p.Partition, error) {
 
 	// Nothing to do if the partitions or condition are empty
 	if len(pars) == 0 || len(conditions) == 0 {
@@ -151,15 +151,15 @@ func Filter(pars []p.Partition, conditions []Condition) ([]p.Partition, error) {
 	for i, par := range pars {
 		switch par.(type) {
 		case *p.PartitionBool:
-			filteredPars[i] = &p.PartitionBool{Ch: make(chan bool)}
+			filteredPars[i] = &p.PartitionBool{}
 		case *p.PartitionString:
-			filteredPars[i] = &p.PartitionString{Ch: make(chan string)}
+			filteredPars[i] = &p.PartitionString{}
 		case *p.PartitionFloat64:
-			filteredPars[i] = &p.PartitionFloat64{Ch: make(chan float64)}
+			filteredPars[i] = &p.PartitionFloat64{}
 		case *p.PartitionTime:
-			filteredPars[i] = &p.PartitionTime{Ch: make(chan time.Time)}
+			filteredPars[i] = &p.PartitionTime{}
 		case *p.PartitionInterface:
-			filteredPars[i] = &p.PartitionInterface{Ch: make(chan interface{})}
+			filteredPars[i] = &p.PartitionInterface{}
 		}
 	}
 
@@ -175,7 +175,7 @@ func Filter(pars []p.Partition, conditions []Condition) ([]p.Partition, error) {
 			wg.Add(len(pars) - 1)
 			for i := 1; i < len(pars); i++ {
 				go func(p p.Partition, index int) {
-					values[index], _ = p.ReadValue()
+					values[index], _ = p.ReadValue() // read value as an interface
 					wg.Done()
 				}(pars[i], i)
 			}
@@ -193,32 +193,19 @@ func Filter(pars []p.Partition, conditions []Condition) ([]p.Partition, error) {
 					}
 				}
 				// If the condition is true, we pipe the values through our channels
-				if result == true {
+				if result {
 					var wg sync.WaitGroup
 					wg.Add(len(filteredPars))
 					for i := 0; i < len(filteredPars); i++ {
-						go func(index int) {
+						go func(idx int) {
 							// Send value on the filtered par
-							filteredPars.
+							filteredPars[idx].SendValue(values[idx])
+							wg.Done()
 						}(i)
 					}
 					wg.Wait()
 				}
 			}
-
-			/*
-
-			// This will need to be more robust for compound types
-type Condition struct {
-	ParitionIndex   int
-	Operation       Operation
-	ConstantValue   interface{} // check if this is nil first
-	ComparisonIndex interface{} // check if this is nil second
-}
-
-			*/
-
-
 		}
 	}()
 
@@ -232,6 +219,85 @@ type Condition struct {
 	// first-loop through the conditions to see if any are dependent on each other, if not, then we don't need to do
 	// any comparisons across conditions
 
+}
+
+// Take returns the top/head number of rows specified
+// Take will need to drain or close the old channel, or else it will hang
+func Take(pars []p.Partition, numRows int) ([]p.Partition, error) {
+	// If value is not a natural number, we set it to 100 by default
+	if numRows < 1 {
+		numRows = 100
+	}
+
+	takePars := make([]p.Partition, len(pars))
+	// spin-up our new channels
+	// TODO: we might want to synchronize these better to ensure all partitions send the same number of rows. They
+	// should implicitly send the same number of rows as they should all be the same shape all of the time.
+	for i, l := 0, len(pars); i < l; i++ {
+		switch parValue := pars[i].(type) {
+		case *p.PartitionBool:
+			par := &p.PartitionBool{Ch: make(chan bool)}
+			takePars[i] = par
+			go func(n int, v *p.PartitionBool) {
+				defer par.CloseChannel()
+				for val := range v.Ch {
+					if n > 0 {
+						par.Ch <- val
+						n--
+					}
+				}
+			}(numRows, parValue)
+		case *p.PartitionString:
+			par := &p.PartitionString{Ch: make(chan string)}
+			takePars[i] = par
+			go func(n int, v *p.PartitionString) {
+				defer par.CloseChannel()
+				for val := range v.Ch {
+					if n > 0 {
+						par.Ch <- val
+						n--
+					}
+				}
+			}(numRows, parValue)
+		case *p.PartitionFloat64:
+			par := &p.PartitionFloat64{Ch: make(chan float64)}
+			takePars[i] = par
+			go func(n int, v *p.PartitionFloat64) {
+				defer par.CloseChannel()
+				for val := range v.Ch {
+					if n > 0 {
+						par.Ch <- val
+						n--
+					}
+				}
+			}(numRows, parValue)
+		case *p.PartitionTime:
+			par := &p.PartitionTime{Ch: make(chan time.Time)}
+			takePars[i] = par
+			go func(n int, v *p.PartitionTime) {
+				defer par.CloseChannel()
+				for val := range v.Ch {
+					if n > 0 {
+						par.Ch <- val
+						n--
+					}
+				}
+			}(numRows, parValue)
+		case *p.PartitionInterface:
+			par := &p.PartitionInterface{Ch: make(chan interface{})}
+			takePars[i] = par
+			go func(n int, v *p.PartitionInterface) {
+				defer par.CloseChannel()
+				for val := range v.Ch {
+					if n > 0 {
+						par.Ch <- val
+						n--
+					}
+				}
+			}(numRows, parValue)
+		}
+	}
+	return takePars, nil
 }
 
 // Select chooses the columns to make available
