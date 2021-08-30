@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
 	p "github.com/josh-weston/parquet-playground/internal/parquet"
@@ -39,26 +40,40 @@ func main() {
 	FILTER TEST
 	***********/
 
-	/*
-		// Operation will check if the first partition (index 0) is less than the second partition (index 1)
-		o := t.Condition{
-			ParitionIndex:   0,
-			Operation:       t.Eq,
-			ConstantValue:   nil,
-			ComparisonIndex: 1,
-		}
+	// Operation will check if the first partition (index 0) is less than the constant value of 100
+	o := t.Condition{
+		PartitionIndex:  0,
+		Operation:       t.Lte,
+		ConstantValue:   100,
+		ComparisonIndex: nil,
+	}
 
-		filteredPartitions, err := t.Filter(partitions, o)
-		if err != nil {
-			log.Println(err)
-			os.Exit(1)
-		}
-	*/
+	// Operation will check if the second partition (index 1) is less than the third partition (index 2)
+	o2 := t.Condition{
+		PartitionIndex:  1,
+		Operation:       t.Gt,
+		ConstantValue:   nil,
+		ComparisonIndex: 2,
+	}
+
+	// Operation will check if the time partition occurs before May 30, 2011
+	o3 := t.Condition{
+		PartitionIndex:  3,
+		Operation:       t.Lte,
+		ConstantValue:   time.Date(2011, 05, 30, 0, 0, 0, 0, time.UTC),
+		ComparisonIndex: nil,
+	}
+
+	filteredPartitions, err := t.Filter(partitions, o, o2, o3)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
 
 	/********
 	TAKE TEST
 	*********/
-	takePartitions, err := t.Take(partitions, 50)
+	takePartitions, err := t.Take(filteredPartitions, 50)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
@@ -70,6 +85,8 @@ func main() {
 	// Our output header
 	var s string = "\n"
 	var u string = ""
+	s += "\t"
+	u += "\t"
 	for i := range takePartitions {
 		s += fmt.Sprintf("Col-%d\t", i+1)
 		u += "----------\t"
@@ -78,23 +95,26 @@ func main() {
 	fmt.Fprintln(w, u)
 
 	// Our output values (cast to string)
-	values := make([]string, len(takePartitions))
+	values := make([]string, len(takePartitions)+1) // add one for when we show the surrogate row index
+	count := 0
 	// Read my taken values
 	for v := range takePartitions[0].ReadAllValues() {
-		values[0] = fmt.Sprint(v)
+		count++
+		values[0] = fmt.Sprintf("[%d]", count)
+		values[1] = fmt.Sprint(v)
 		var wg sync.WaitGroup
 		wg.Add(len(takePartitions) - 1)
-		for i := 1; i < len(takePartitions); i++ {
+		for i, l := 1, len(takePartitions); i < l; i++ {
 			go func(p p.Partition, index int) {
 				val, _ := p.ReadValue() // read value as an interface
-				values[index] = fmt.Sprint(val)
+				values[index+1] = fmt.Sprint(val)
 				wg.Done()
 			}(takePartitions[i], i)
 		}
-		wg.Wait() // wait for all channels to receive before moving on
-		// Now print our values to the console
+		wg.Wait() // wait for all channels to receive before writing to the console
 		fmt.Fprintln(w, strings.Join(values, "\t"))
 	}
+	fmt.Fprintln(w)
 	w.Flush()
 
 	/*

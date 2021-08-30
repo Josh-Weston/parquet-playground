@@ -18,38 +18,51 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 		}
 		switch o {
 		case Eq:
-			return s == v
+			return v == s
 		case Neq:
-			return s != v
+			return v != s
 		case Lt:
-			return s < v
+			return v < s
 		case Lte:
-			return s <= v
+			return v <= s
 		case Gt:
-			return s > v
+			return v > s
 		case Gte:
-			return s >= v
+			return v >= s
 		default:
 			return false
 		}
 	case float64:
-		f, ok := compVal.(float64)
-		if !ok {
+		var f float64
+		switch t := compVal.(type) {
+		case float64:
+			f = t
+		case int:
+			f = float64(t)
+		case int8:
+			f = float64(t)
+		case int16:
+			f = float64(t)
+		case int32:
+			f = float64(t)
+		case int64:
+			f = float64(t)
+		default:
 			return false
 		}
 		switch o {
 		case Eq:
-			return f == v
+			return v == f
 		case Neq:
-			return f != v
+			return v != f
 		case Lt:
-			return f < v
+			return v < f
 		case Lte:
-			return f <= v
+			return v <= f
 		case Gt:
-			return f > v
+			return v > f
 		case Gte:
-			return f >= v
+			return v >= f
 		default:
 			return false
 		}
@@ -60,9 +73,9 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 		}
 		switch o {
 		case Eq:
-			return b == v
+			return v == b
 		case Neq:
-			return b != v
+			return v != b
 		default:
 			return false
 		}
@@ -73,17 +86,17 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 		}
 		switch o {
 		case Eq:
-			return t == v
+			return v == t
 		case Neq:
-			return t != v
+			return v != t
 		case Lt:
-			return t.Before(v)
+			return v.Before(t)
 		case Lte:
-			return t == v || t.Before(v)
+			return v == t || v.Before(t)
 		case Gt:
-			return t.After(v)
+			return v.After(t)
 		case Gte:
-			return t == v || t.After(v)
+			return v == t || v.After(t)
 		default:
 			return false
 		}
@@ -94,7 +107,7 @@ func CheckCondition(val interface{}, compVal interface{}, o Operation) bool {
 
 // This will need to be more robust for compound types
 type Condition struct {
-	ParitionIndex   int
+	PartitionIndex  int
 	Operation       Operation
 	ConstantValue   interface{} // check if this is nil first
 	ComparisonIndex interface{} // check if this is nil second
@@ -151,15 +164,15 @@ func Filter(pars []p.Partition, conditions ...Condition) ([]p.Partition, error) 
 	for i, par := range pars {
 		switch par.(type) {
 		case *p.PartitionBool:
-			filteredPars[i] = &p.PartitionBool{}
+			filteredPars[i] = &p.PartitionBool{Ch: make(chan bool)}
 		case *p.PartitionString:
-			filteredPars[i] = &p.PartitionString{}
+			filteredPars[i] = &p.PartitionString{Ch: make(chan string)}
 		case *p.PartitionFloat64:
-			filteredPars[i] = &p.PartitionFloat64{}
+			filteredPars[i] = &p.PartitionFloat64{Ch: make(chan float64)}
 		case *p.PartitionTime:
-			filteredPars[i] = &p.PartitionTime{}
+			filteredPars[i] = &p.PartitionTime{Ch: make(chan time.Time)}
 		case *p.PartitionInterface:
-			filteredPars[i] = &p.PartitionInterface{}
+			filteredPars[i] = &p.PartitionInterface{Ch: make(chan interface{})}
 		}
 	}
 
@@ -181,30 +194,42 @@ func Filter(pars []p.Partition, conditions ...Condition) ([]p.Partition, error) 
 			}
 			wg.Wait() // wait for all channels to receive before moving on
 
+			result := true
 			// Check the conditions
 			for _, c := range conditions {
-				var result bool
+				if !result {
+					break // short-circuit if one of the conditions has already failed
+				}
+				// TODO: some way to notify the user they are missing conditions or their indices are out of range.
+				// We don't stop the operation, we simply ignore the condition
+				if (c.ConstantValue == nil && c.ComparisonIndex == nil) || c.PartitionIndex >= len(values) {
+					continue
+				}
+				if c.PartitionIndex > len(values) {
+					continue
+				}
+
 				if c.ConstantValue != nil {
-					result = CheckCondition(values[c.ParitionIndex], c.ConstantValue, c.Operation)
+					result = CheckCondition(values[c.PartitionIndex], c.ConstantValue, c.Operation)
 				} else if c.ComparisonIndex != nil {
 					i, ok := c.ComparisonIndex.(int)
-					if ok {
-						result = CheckCondition(values[c.ParitionIndex], values[i], c.Operation)
+					if ok && i < len(values) { // ignore condition if ComparisonIndex is out of range
+						result = CheckCondition(values[c.PartitionIndex], values[i], c.Operation)
 					}
 				}
-				// If the condition is true, we pipe the values through our channels
-				if result {
-					var wg sync.WaitGroup
-					wg.Add(len(filteredPars))
-					for i := 0; i < len(filteredPars); i++ {
-						go func(idx int) {
-							// Send value on the filtered par
-							filteredPars[idx].SendValue(values[idx])
-							wg.Done()
-						}(i)
-					}
-					wg.Wait()
+			}
+			// If the conditions evaluate to true, we pipe the values through our channels
+			if result {
+				var wg sync.WaitGroup
+				wg.Add(len(filteredPars))
+				for i := 0; i < len(filteredPars); i++ {
+					go func(idx int) {
+						// Send value on the filtered par
+						filteredPars[idx].SendValue(values[idx])
+						wg.Done()
+					}(i)
 				}
+				wg.Wait()
 			}
 		}
 	}()

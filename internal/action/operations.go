@@ -1,5 +1,18 @@
 package action
 
+/*
+	Parquet Primitive		Go Type
+	-----------------		-------
+	BOOLEAN					bool
+	INT32					int32
+	INT64					int64
+	INT96					string
+	FLOAT					float32
+	DOUBLE					float64
+	BYTE_ARRAY				string
+	FIXED_LEN_BYTE_ARRAY	string
+*/
+
 import "math"
 
 type Action interface {
@@ -7,7 +20,6 @@ type Action interface {
 }
 
 // Exponent receives a partition and returns the partition to the power of n
-// TODO: these sorts of calculations should likely just be hand-written?
 func POWER(par chan float64, n float64) (chan float64, error) {
 	newPartition := make(chan float64)
 	defer close(newPartition)
@@ -21,18 +33,3 @@ func POWER(par chan float64, n float64) (chan float64, error) {
 	}(newPartition, par, n)
 	return newPartition, nil
 }
-
-// As a series of functions is so much easier to conceptualize
-
-/*
-	Parquet Primitive		Go Type
-	-----------------		-------
-	BOOLEAN					bool
-	INT32					int32
-	INT64					int64
-	INT96					string
-	FLOAT					float32
-	DOUBLE					float64
-	BYTE_ARRAY				string
-	FIXED_LEN_BYTE_ARRAY	string
-*/
