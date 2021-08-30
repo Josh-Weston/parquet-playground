@@ -13,23 +13,27 @@ package action
 	FIXED_LEN_BYTE_ARRAY	string
 */
 
-import "math"
+import (
+	"math"
+
+	p "github.com/josh-weston/parquet-playground/internal/parquet"
+)
 
 type Action interface {
 	Cancel()
 }
 
-// Exponent receives a partition and returns the partition to the power of n
-func POWER(par chan float64, n float64) (chan float64, error) {
-	newPartition := make(chan float64)
-	defer close(newPartition)
+// Power receives a partition and returns the partition to the power of n
+func Power(par *p.PartitionFloat64, n float64) (*p.PartitionFloat64, error) {
+	newPartition := &p.PartitionFloat64{Ch: make(chan float64)}
 	// TODO: error handling here
 	// Read each value from each channel to preserve the order of rows
 	go func(stream chan float64, p chan float64, n float64) {
-		for val := range par {
+		defer close(stream)
+		for val := range p {
 			result := math.Pow(val, n)
 			stream <- result
 		}
-	}(newPartition, par, n)
+	}(newPartition.Ch, par.Ch, n)
 	return newPartition, nil
 }

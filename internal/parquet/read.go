@@ -392,23 +392,25 @@ func ReadColumnsFromParquet(f string, cols []string, nr int64, chunkSize int64) 
 			// 	break
 			// }
 			var wg sync.WaitGroup
-			var numRowsRead int // TODO: will likely no longer need this check, can just use chunkSize
 			l := len(cols)
 			wg.Add(l)
 
 			// Concurrent column reads
 			// Sends all values for a column before sending for the next column
+			// pr.ReadColumnByPath changes its internal state which can cause race conditions if we do not guard the operation with a lock
+			var mu sync.Mutex
 			for i := 0; i < l; i++ {
 				// TODO: Error-handling here
-				go func(p Partition, colName string, np int64) {
+				go func(p Partition, colName string, np int64, mu *sync.Mutex) {
 					// fmt.Println(colName)
 					defer wg.Done()
-					values, _, _, err := pr.ReadColumnByPath(common.ReformPathStr("parquet_go_root."+colName), chunkSize)
-					if err != nil {
-						log.Println(err)
+					mu.Lock()
+					values, _, _, readErr := pr.ReadColumnByPath(common.ReformPathStr("parquet_go_root."+colName), chunkSize)
+					mu.Unlock()
+					if readErr != nil {
+						log.Println(readErr)
 						return
 					}
-					numRowsRead = len(values)
 					// Perform any conversions and send the value to the channel as the appropriate type
 					for _, d := range values {
 						// fmt.Println(reflect.TypeOf(d))
@@ -428,10 +430,10 @@ func ReadColumnsFromParquet(f string, cols []string, nr int64, chunkSize int64) 
 							pt.Ch <- d
 						}
 					}
-				}(pars[i], cols[i], chunkSize)
+				}(pars[i], cols[i], chunkSize, &mu)
 			}
 			wg.Wait() // wait for all channels to receive their chunk before moving on
-			i += int64(numRowsRead)
+			i += int64(chunkSize)
 			// fmt.Printf("Rows offset: %d, rows read: %d, rows remaining: %d\n", i, numRowsRead, nr-i)
 		}
 		pr.ReadStop()

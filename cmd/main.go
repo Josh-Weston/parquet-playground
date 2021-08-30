@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
+	a "github.com/josh-weston/parquet-playground/internal/action"
 	p "github.com/josh-weston/parquet-playground/internal/parquet"
 	t "github.com/josh-weston/parquet-playground/internal/transform"
 )
@@ -34,6 +35,14 @@ func main() {
 		log.Println("Error returned from ReadColumnsFromParquet")
 		log.Println(err)
 		os.Exit(1)
+	}
+
+	/**********
+	ACTION TEST
+	**********/
+	switch p := partitions[0].(type) {
+	case *p.PartitionFloat64:
+		partitions[0], _ = a.Power(p, 2) // this is causing a race condition for some reason
 	}
 
 	/**********
