@@ -1,0 +1,164 @@
+package main
+
+import (
+	"bytes"
+	"database/sql"
+	"html/template"
+	"log"
+	"os"
+	"reflect"
+	"testing"
+
+	_ "github.com/denisenkom/go-mssqldb"
+)
+
+func BenchmarkDatabase(b *testing.B) {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	conn, err := databaseConnection()
+	if err != nil {
+		log.Println("Connection could not be established")
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	dp := DataPullInfo{
+		DataSource: "AdventureWorks2017",
+		Schema:     "Production",
+		DataTable:  "TransactionHistoryArchive",
+		DataFields: []string{"TransactionID", "ProductID", "ReferenceOrderID", "ReferenceOrderLineID", "TransactionDate", "TransactionType", "Quantity", "ActualCost", "ModifiedDate"},
+	}
+
+	dataStream := make(chan DataPullRecord)
+
+	// Note: we add length here to simplify the template
+	templateDetails := struct {
+		DataPullInfo
+		NumFields     int
+		NumPredicates int
+	}{
+		dp,
+		len(dp.DataFields) - 1,
+		len(dp.Predicates) - 1,
+	}
+
+	// Build the query based on the fields to pull with predicate pushdown
+	queryTemplate, err := template.New("").Parse(`
+	{{$fieldLength := .NumFields}}
+	{{$predicateLength := .NumPredicates}}
+	USE {{.DataSource}};
+	SELECT
+	{{range $i, $field := .DataFields}}
+		{{$field}}{{ if (lt $i $fieldLength)}},{{end}}
+	{{end}}
+	FROM {{.Schema}}.{{.DataTable}}
+	{{range $i, $predicate := .Predicates}}
+		{{$predicate}}{{if (lt $i $predicateLength )}} AND {{end}}
+	{{end}}
+	`)
+
+	if err != nil {
+		log.Println(err)
+		close(dataStream)
+		os.Exit(1)
+	}
+
+	var query bytes.Buffer
+	err = queryTemplate.Execute(&query, templateDetails)
+	if err != nil {
+		log.Println(err)
+		close(dataStream)
+		os.Exit(1)
+	}
+	rows, err := conn.Query(query.String())
+	if err != nil {
+		log.Println(err)
+		if rows != nil {
+			if closeErr := rows.Close(); closeErr != nil {
+				log.Println(err)
+			}
+		}
+		close(dataStream)
+		os.Exit(1)
+	}
+
+	columnTypes, err := rows.ColumnTypes()
+	if err != nil {
+		log.Println(err)
+		close(dataStream)
+		os.Exit(1)
+	}
+
+	// b.Run("MyWay", func(b *testing.B) {
+	// 	for i := 0; i < b.N; i++ {
+	// 		MyWay(columnTypes, rows)
+	// 	}
+	// })
+
+	b.Run("TheirWay", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			TheirWay(columnTypes, rows)
+		}
+	})
+}
+
+func MyWay(cTypes []*sql.ColumnType, rows *sql.Rows) {
+
+	// Here to avoid calling reflection on each row
+	columnValues := make([]interface{}, len(cTypes))
+	for i, d := range cTypes {
+		if d.ScanType().String() == "[]uint8" {
+			columnValues[i] = float64(0)
+		} else {
+			columnValues[i] = reflect.Zero(d.ScanType()).Interface()
+		}
+	}
+
+	var results [][]interface{}
+	for rows.Next() {
+		// Create new copies of our zero-values
+		record := make([]interface{}, len(columnValues))
+		copy(record, columnValues)
+
+		// Create a slice of their pointer addresses
+		pointers := make([]interface{}, len(record))
+		for i := range record {
+			pointers[i] = &record[i]
+		}
+
+		err := rows.Scan(pointers...)
+		if err != nil {
+			log.Println(err)
+			os.Exit(1)
+		}
+		results = append(results, record)
+	}
+
+}
+
+func TheirWay(cTypes []*sql.ColumnType, rows *sql.Rows) {
+	// Create pointers for the data types
+	var results [][]interface{}
+	ctypes := make([]interface{}, len(cTypes))
+	for i, c := range cTypes {
+		if c.DatabaseTypeName() == "MONEY" {
+			ctypes[i] = new(float64)
+		} else {
+			ctypes[i] = new(interface{})
+		}
+	}
+
+	// Scan the data into the data types
+	for rows.Next() {
+		record := make([]interface{}, len(ctypes))
+		for i := range ctypes {
+			record[i] = reflect.New(reflect.TypeOf(ctypes[i])).Elem().Addr().Interface()
+		}
+		err := rows.Scan(record...)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		results = append(results, record)
+	}
+}
