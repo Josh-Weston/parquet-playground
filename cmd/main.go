@@ -30,7 +30,7 @@ func main() {
 	// p.ReadFromParquet("output/flat.parquet")
 
 	// At this point, I have the channels, they are properly typed, but they exist in an slice of interface{} (will need to be a DHD)
-	partitions, err := p.ReadColumnsFromParquet("output/flat.parquet", []string{"TransactionID", "ProductID", "ReferenceOrderID", "ModifiedDate"}, 100, 15)
+	partitions, err := p.ReadColumnsFromParquet("output/flat.parquet", []string{"TransactionID", "ProductID", "ReferenceOrderID", "ModifiedDate"}, 0, 100)
 	if err != nil {
 		log.Println("Error returned from ReadColumnsFromParquet")
 		log.Println(err)
@@ -40,9 +40,33 @@ func main() {
 	/**********
 	ACTION TEST
 	**********/
-	switch p := partitions[0].(type) {
+	// TODO: The ability to combine these actions
+	actionedPartitions := make([]p.Partition, len(partitions)) // we need to create a new slice to avoid re-assigning to the old channel pointer, which causes a race condition
+	idx := 0
+	switch p := partitions[idx].(type) {
 	case *p.PartitionFloat64:
-		partitions[0], _ = a.Power(p, 2) // this is causing a race condition for some reason
+		squaredPar, _ := a.Power(p, 2)
+		for i := range partitions {
+			if i == idx {
+				actionedPartitions[i] = squaredPar
+			} else {
+				actionedPartitions[i] = partitions[i]
+			}
+		}
+	}
+
+	actionedPartitions2 := make([]p.Partition, len(actionedPartitions))
+	idx = 2
+	switch p := actionedPartitions[idx].(type) {
+	case *p.PartitionFloat64:
+		squaredPar, _ := a.Power(p, 4)
+		for i := range actionedPartitions {
+			if i == idx {
+				actionedPartitions2[i] = squaredPar
+			} else {
+				actionedPartitions2[i] = actionedPartitions[i]
+			}
+		}
 	}
 
 	/**********
@@ -60,7 +84,7 @@ func main() {
 	// Operation will check if the second partition (index 1) is less than the third partition (index 2)
 	o2 := t.Condition{
 		PartitionIndex:  1,
-		Operation:       t.Gt,
+		Operation:       t.Lte,
 		ConstantValue:   nil,
 		ComparisonIndex: 2,
 	}
@@ -73,7 +97,25 @@ func main() {
 		ComparisonIndex: nil,
 	}
 
-	filteredPartitions, err := t.Filter(partitions, o, o2, o3)
+	filteredPartitions, err := t.Filter(actionedPartitions2, o, o2, o3)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	/*********************
+	CALCULATED COLUMN TEST
+	**********************/
+	calculatedPartitions, err := t.AddColumns(filteredPartitions, []int{0, 1})
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
+	/**********
+	SELECT TEST
+	***********/
+	selectedPartitions, err := t.Select(calculatedPartitions, []int{1, 2, 4, 3})
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
@@ -82,12 +124,15 @@ func main() {
 	/********
 	TAKE TEST
 	*********/
-	takePartitions, err := t.Take(filteredPartitions, 50)
+	takePartitions, err := t.Take(selectedPartitions, 50)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
 	}
 
+	/**************
+	READ PARTITIONS
+	***************/
 	const padding = 3
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, padding, ' ', 0) // 0 = align left
 

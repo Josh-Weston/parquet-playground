@@ -24,17 +24,20 @@ type Partition interface {
 	ReadAllValues() chan interface{} // a convenience function for passing through all values from the channel
 	ReadValue() (interface{}, bool)  // a convenience function for reading the value as an interface. (Dangerous) Must ensure no other operation is reading from the channel
 	SendValue(interface{}) error     // a way to send a value on the channel
+	IsClosed() bool
 }
 
 // The specific type of partition
 type PartitionFloat64 struct {
-	Ch       chan float64
-	IsClosed bool
+	Ch     chan float64
+	Closed bool
 }
 
 func (p *PartitionFloat64) CloseChannel() {
-	close(p.Ch)
-	p.IsClosed = true
+	if !p.Closed {
+		close(p.Ch)
+		p.Closed = true
+	}
 }
 
 func (p *PartitionFloat64) ReadAllValues() chan interface{} {
@@ -48,10 +51,26 @@ func (p *PartitionFloat64) ReadAllValues() chan interface{} {
 	return c
 }
 
+func (p *PartitionFloat64) ReadAllValuesTyped() chan float64 {
+	return p.Ch
+}
+
+func (p *PartitionFloat64) GetChannel() (chan float64, error) {
+	if p.Closed {
+		return nil, errors.New("channel is closed")
+	}
+	return p.Ch, nil
+}
+
 func (p *PartitionFloat64) ReadValue() (interface{}, bool) {
 	var i interface{}
 	i, ok := <-p.Ch
 	return i, ok
+}
+
+func (p *PartitionFloat64) ReadValueTyped() (float64, bool) {
+	f, ok := <-p.Ch
+	return f, ok
 }
 
 func (p *PartitionFloat64) SendValue(val interface{}) error {
@@ -63,14 +82,28 @@ func (p *PartitionFloat64) SendValue(val interface{}) error {
 	return nil
 }
 
+func (p *PartitionFloat64) SendValueTyped(v float64) error {
+	if p.Closed {
+		return errors.New("channel is closed")
+	}
+	p.Ch <- v
+	return nil
+}
+
+func (p *PartitionFloat64) IsClosed() bool {
+	return p.Closed
+}
+
 type PartitionTime struct {
-	Ch       chan time.Time
-	IsClosed bool
+	Ch     chan time.Time
+	Closed bool
 }
 
 func (p *PartitionTime) CloseChannel() {
-	close(p.Ch)
-	p.IsClosed = true
+	if !p.Closed {
+		close(p.Ch)
+		p.Closed = true
+	}
 }
 
 func (p *PartitionTime) ReadAllValues() chan interface{} {
@@ -99,14 +132,20 @@ func (p *PartitionTime) SendValue(val interface{}) error {
 	return nil
 }
 
+func (p *PartitionTime) IsClosed() bool {
+	return p.Closed
+}
+
 type PartitionString struct {
-	Ch       chan string
-	IsClosed bool
+	Ch     chan string
+	Closed bool
 }
 
 func (p *PartitionString) CloseChannel() {
-	close(p.Ch)
-	p.IsClosed = true
+	if !p.Closed {
+		close(p.Ch)
+		p.Closed = true
+	}
 }
 
 func (p *PartitionString) ReadAllValues() chan interface{} {
@@ -135,14 +174,20 @@ func (p *PartitionString) SendValue(val interface{}) error {
 	return nil
 }
 
+func (p *PartitionString) IsClosed() bool {
+	return p.Closed
+}
+
 type PartitionBool struct {
-	Ch       chan bool
-	IsClosed bool
+	Ch     chan bool
+	Closed bool
 }
 
 func (p *PartitionBool) CloseChannel() {
-	close(p.Ch)
-	p.IsClosed = true
+	if !p.Closed {
+		close(p.Ch)
+		p.Closed = true
+	}
 }
 
 func (p *PartitionBool) ReadAllValues() chan interface{} {
@@ -171,14 +216,20 @@ func (p *PartitionBool) SendValue(val interface{}) error {
 	return nil
 }
 
+func (p *PartitionBool) IsClosed() bool {
+	return p.Closed
+}
+
 type PartitionInterface struct {
-	Ch       chan interface{}
-	IsClosed bool
+	Ch     chan interface{}
+	Closed bool
 }
 
 func (p *PartitionInterface) CloseChannel() {
-	close(p.Ch)
-	p.IsClosed = true
+	if !p.Closed {
+		close(p.Ch)
+		p.Closed = true
+	}
 }
 
 func (p *PartitionInterface) ReadAllValues() chan interface{} {
@@ -200,6 +251,10 @@ func (p *PartitionInterface) ReadValue() (interface{}, bool) {
 func (p *PartitionInterface) SendValue(val interface{}) error {
 	p.Ch <- val
 	return nil
+}
+
+func (p *PartitionInterface) IsClosed() bool {
+	return p.Closed
 }
 
 // type DHDColumn struct {
@@ -269,6 +324,41 @@ func makeChannel(primitive string, logical *parquet.LogicalType) (interface{}, e
 	}
 }
 */
+
+// NewPartitionFloat64 is a convenience function for creating a new PartitionFloat64
+func NewPartitionFloat64() *PartitionFloat64 {
+	return &PartitionFloat64{
+		Ch: make(chan float64),
+	}
+}
+
+// NewPartitionTime is a convenience function for creating a new PartitionTime
+func NewPartitionTime() *PartitionTime {
+	return &PartitionTime{
+		Ch: make(chan time.Time),
+	}
+}
+
+// NewPartitionBool is a convenience function for creating a new PartitionBool
+func NewPartitionBool() *PartitionBool {
+	return &PartitionBool{
+		Ch: make(chan bool),
+	}
+}
+
+// NewPartitionString is a convenience function for creating a new PartitionString
+func NewPartitionString() *PartitionString {
+	return &PartitionString{
+		Ch: make(chan string),
+	}
+}
+
+// NewPartitionInterface is a convenience function for creating a new PartitionInterface
+func NewPartitionInterface() *PartitionInterface {
+	return &PartitionInterface{
+		Ch: make(chan interface{}),
+	}
+}
 
 // TODO: the numeric types need more checks and balances
 func makePartition(primitive string, logical *parquet.LogicalType) (Partition, error) {
@@ -366,19 +456,6 @@ func ReadColumnsFromParquet(f string, cols []string, nr int64, chunkSize int64) 
 		// Close the channels when streaming is complete
 		for _, p := range pars {
 			defer p.CloseChannel()
-			// switch v := c.(type) {
-			// case chan float64:
-			// 	defer close(v)
-			// case chan string:
-			// 	defer close(v)
-			// case chan bool:
-			// 	defer close(v)
-			// case chan interface{}:
-			// 	defer close(v)
-			// default:
-			// 	log.Println("Invalid channel type provided, exiting application")
-			// 	os.Exit(1) // TODO: better error-handling here
-			// }
 		}
 
 		// Continue retrieving rows in batches from each column until we have reached the desired number of rows
@@ -411,9 +488,8 @@ func ReadColumnsFromParquet(f string, cols []string, nr int64, chunkSize int64) 
 						log.Println(readErr)
 						return
 					}
-					// Perform any conversions and send the value to the channel as the appropriate type
+					// Perform any conversions and send the value to the channel as the appropriate type if the channel is still open
 					for _, d := range values {
-						// fmt.Println(reflect.TypeOf(d))
 						switch pt := p.(type) {
 						case *PartitionFloat64:
 							converted := convertToFloat64(d)
@@ -434,7 +510,7 @@ func ReadColumnsFromParquet(f string, cols []string, nr int64, chunkSize int64) 
 			}
 			wg.Wait() // wait for all channels to receive their chunk before moving on
 			i += int64(chunkSize)
-			// fmt.Printf("Rows offset: %d, rows read: %d, rows remaining: %d\n", i, numRowsRead, nr-i)
+			// fmt.Printf("Rows offset: %d, rows read: %d, rows remaining: %d\n", i, chunkSize, nr-i)
 		}
 		pr.ReadStop()
 		fr.Close()
@@ -505,5 +581,7 @@ a pipe used to perform the transformations. I might want to do this for my trans
  func(interface{}) chan float64
 
  // What if I passed things around in a struct, with arrays of the channel types that are available and a map?
+
+ // In DataFlow Engines it is common to pass a record around, not like I am doing.
 
 */

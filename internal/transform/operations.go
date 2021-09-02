@@ -1,6 +1,8 @@
 package transform
 
 import (
+	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -247,7 +249,6 @@ func Filter(pars []p.Partition, conditions ...Condition) ([]p.Partition, error) 
 }
 
 // Take returns the top/head number of rows specified
-// Take will need to drain or close the old channel, or else it will hang
 func Take(pars []p.Partition, numRows int) ([]p.Partition, error) {
 	// If value is not a natural number, we set it to 100 by default
 	if numRows < 1 {
@@ -326,11 +327,183 @@ func Take(pars []p.Partition, numRows int) ([]p.Partition, error) {
 }
 
 // Select chooses the columns to make available
-// TODO: closing the channels can be optimized before reaching select.
-/*
-func Select() {
+// TODO: closing the channels can be optimized before reaching select. The channels need to be drained to avoid a deadlock
+// so they can either be closed or drained before reaching this step
 
+// Select returns the selected partitions.
+// This operation is usually called at the end, or after an operation that required a column that is no longer needed
+// idx is the list of partitions to keep
+// TODO: ability to select the same partition multiple times. This might be better suited as an "Alias" operator?
+func Select(pars []p.Partition, idx []int) ([]p.Partition, error) {
+	// Nothing to do if the partitions or indices are not specified
+	if len(pars) == 0 || len(idx) == 0 {
+		return pars, nil
+	}
+
+	// Determine number of valid indices to avoid reallocated memory
+	validIdx := 0
+	for _, j := range idx {
+		if j < len(pars) {
+			validIdx++
+		}
+	}
+
+	if validIdx == 0 {
+		return pars, errors.New("no valid indices provided, returning all columns")
+	}
+
+	selectedPars := make([]p.Partition, validIdx)
+
+	// TODO: notify the originator that they can safely close the channel (e.g., it is no longer needed)
+	// otherwise, I need to drain the channel like I am doing here
+	for i := range pars {
+		selected := false
+		for j, index := range idx {
+			if i == index {
+				selectedPars[j] = pars[i] // so the columns can be re-organized
+				selected = true
+				break
+			}
+		}
+		// Drain the channel if not selected to avoid a deadlock
+		if !selected {
+			go func(par p.Partition) {
+				for range par.ReadAllValues() {
+					// drain the channel
+				}
+			}(pars[i])
+		}
+	}
+	return selectedPars, nil
 }
-*/
 
-// I need someway of passing the filters through
+// AddColumns returns the partitions with a new partition for the addition of the selected columns
+// TODO: this needs to be generalize for additional calculations
+func AddColumns(pars []p.Partition, idx []int) ([]p.Partition, error) {
+
+	// Nothing to do if the partitions or indices are not specified
+	if len(pars) == 0 || len(idx) <= 1 {
+		return pars, errors.New("invalid indices provided")
+	}
+
+	valid := true
+	for _, j := range idx {
+		if j >= len(pars) || j < 0 {
+			valid = false
+		}
+	}
+
+	if !valid {
+		return pars, errors.New("invalid indices provided")
+	}
+
+	calculatedPars := make([]p.Partition, len(pars)+1) // add 1 for the new partition
+	valuePars := make([]*p.PartitionFloat64, len(idx)) // can only handle Float64 partitions for now
+	passThroughIdx := make([]int, len(idx))            // need to pass-through the original values to the channels involved in the calculation
+	currIdx := 0
+	for i := range pars {
+		selected := false
+		for _, j := range idx {
+			if i == j {
+				selected = true
+				switch t := pars[i].(type) {
+				case *p.PartitionBool:
+					calculatedPars[i] = p.NewPartitionBool()
+				case *p.PartitionString:
+					calculatedPars[i] = p.NewPartitionString()
+				case *p.PartitionFloat64:
+					valuePars[currIdx] = t
+					passThroughIdx[currIdx] = i
+					currIdx++
+					calculatedPars[i] = p.NewPartitionFloat64()
+				case *p.PartitionTime:
+					calculatedPars[i] = p.NewPartitionTime()
+				case *p.PartitionInterface:
+					calculatedPars[i] = p.NewPartitionInterface()
+				}
+				break
+			}
+		}
+		if !selected {
+			calculatedPars[i] = pars[i]
+		}
+	}
+
+	// Create my new channel for the calculation
+	calculatedPar := p.NewPartitionFloat64()
+	calculatedPars[len(calculatedPars)-1] = calculatedPar
+
+	go func() {
+		// Read the values from the partitions involved in the calculations
+		values := make([]float64, len(valuePars)) // avoid the need for locking and synchronization
+
+		// Close calculated channel and the passthrough channels once all values are read
+		defer calculatedPar.CloseChannel()
+		for _, idx := range passThroughIdx {
+			defer calculatedPars[idx].CloseChannel()
+		}
+
+		// I need to pass the values through to the partitions that are involved in the calculations
+		for v := range valuePars[0].ReadAllValuesTyped() {
+			values[0] += v
+			var wg sync.WaitGroup
+			wg.Add(len(valuePars) - 1)
+			for i := 1; i < len(valuePars); i++ {
+				go func(p *p.PartitionFloat64, idx int) {
+					values[idx], _ = p.ReadValueTyped()
+					wg.Done()
+				}(valuePars[i], i)
+			}
+			wg.Wait() // wait for all channels to receive before moving on
+			var result float64
+			for i := range values {
+				result += values[i]
+			}
+
+			wg.Add(len(values) + 1) // calculated partition + the pass-through partitions
+			// Send result to the calculated column
+			go func() {
+				// TODO: better error-handling here
+				defer wg.Done()
+				err := calculatedPar.SendValueTyped(result)
+				if err != nil {
+					log.Println(err)
+				}
+			}()
+
+			// Pass-through original values to the partitions involved in the calculation
+			for i, l := 0, len(values); i < l; i++ {
+				go func(par p.Partition, v float64) {
+					defer wg.Done()
+					par.SendValue(v) // TODO: better error-handling here
+				}(calculatedPars[passThroughIdx[i]], values[i])
+			}
+			wg.Wait()
+		}
+	}()
+
+	return calculatedPars, nil
+}
+
+// How an aggregate function might work
+/*
+
+	// Read the values from the partitions involved in the calculations
+	values := make([]float64, len(valuePars)) // avoid the need for locking and synchronization
+	defer calculatedPar.CloseChannel()
+	var wg sync.WaitGroup
+	wg.Add(len(valuePars))
+	for i, l := 0, len(valuePars); i < l; i++ {
+		go func(p *p.PartitionFloat64, idx int) {
+			// TODO: better error-handling here for when channel is closed
+			defer wg.Done()
+			ch, _ := p.GetChannel()
+			for val := range ch {
+				values[idx]+= val
+			}
+		}(valuePars[i], i)
+	}
+	wg.Wait()
+	// Perform calculation
+
+*/
