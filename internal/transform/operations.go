@@ -207,7 +207,8 @@ func Filter(pars []p.Partition, conditions ...Condition) ([]p.Partition, error) 
 				if (c.ConstantValue == nil && c.ComparisonIndex == nil) || c.PartitionIndex >= len(values) {
 					continue
 				}
-				if c.PartitionIndex > len(values) {
+
+				if c.PartitionIndex >= len(values) {
 					continue
 				}
 
@@ -445,7 +446,7 @@ func AddColumns(pars []p.Partition, idx []int) ([]p.Partition, error) {
 
 		// I need to pass the values through to the partitions that are involved in the calculations
 		for v := range valuePars[0].ReadAllValuesTyped() {
-			values[0] += v
+			values[0] = v
 			var wg sync.WaitGroup
 			wg.Add(len(valuePars) - 1)
 			for i := 1; i < len(valuePars); i++ {

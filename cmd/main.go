@@ -77,7 +77,7 @@ func main() {
 	o := t.Condition{
 		PartitionIndex:  0,
 		Operation:       t.Lte,
-		ConstantValue:   100,
+		ConstantValue:   500,
 		ComparisonIndex: nil,
 	}
 
@@ -115,7 +115,7 @@ func main() {
 	/**********
 	SELECT TEST
 	***********/
-	selectedPartitions, err := t.Select(calculatedPartitions, []int{1, 2, 4, 3})
+	selectedPartitions, err := t.Select(calculatedPartitions, []int{0, 1, 2, 4, 3})
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
