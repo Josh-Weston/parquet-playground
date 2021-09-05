@@ -93,7 +93,7 @@ func main() {
 	o3 := t.Condition{
 		PartitionIndex:  3,
 		Operation:       t.Lte,
-		ConstantValue:   time.Date(2011, 05, 30, 0, 0, 0, 0, time.UTC),
+		ConstantValue:   time.Date(2011, 06, 01, 0, 0, 0, 0, time.UTC),
 		ComparisonIndex: nil,
 	}
 
@@ -112,10 +112,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// TODO: Add a viewer operator to just see what is going on
+
+	/************
+	GROUPING TEST
+	************/
+
+	// TODO: Deadlock when more than 1 groupby specified
+	groupedPartitions, err := t.GroupBy(calculatedPartitions, []int{3}, []string{"SUM", "SUM", "SUM", "SUM"})
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
 	/**********
 	SELECT TEST
 	***********/
-	selectedPartitions, err := t.Select(calculatedPartitions, []int{0, 1, 2, 4, 3})
+	selectedPartitions, err := t.Select(groupedPartitions, []int{0, 1, 2, 3, 4})
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)

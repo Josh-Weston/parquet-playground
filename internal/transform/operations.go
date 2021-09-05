@@ -2,7 +2,9 @@ package transform
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -486,25 +488,182 @@ func AddColumns(pars []p.Partition, idx []int) ([]p.Partition, error) {
 	return calculatedPars, nil
 }
 
-// How an aggregate function might work
-/*
+// GroupBy receives the partitions to GroupBy, as well as the aggregate functions for the remaining partitions
+// TODO: It would be great if we were able to pass aggregate functions into this instead of keywords
+// Warning: GroupBy can be memory intensive if there are many items to GroupBy as the interim state is maintained in memory
+// TODO: This is a good opportunity to divide-and-conquer with a mapReduce() style implementation across multiple Go routines
+// TODO: Change aggregations to a const IOTA
+func GroupBy(pars []p.Partition, g []int, agg []string) ([]p.Partition, error) {
 
-	// Read the values from the partitions involved in the calculations
-	values := make([]float64, len(valuePars)) // avoid the need for locking and synchronization
-	defer calculatedPar.CloseChannel()
-	var wg sync.WaitGroup
-	wg.Add(len(valuePars))
-	for i, l := 0, len(valuePars); i < l; i++ {
-		go func(p *p.PartitionFloat64, idx int) {
-			// TODO: better error-handling here for when channel is closed
-			defer wg.Done()
-			ch, _ := p.GetChannel()
-			for val := range ch {
-				values[idx]+= val
-			}
-		}(valuePars[i], i)
+	if len(g)+len(agg) != len(pars) {
+		return pars, errors.New("invalid number of arguments provided, returning partitions as is")
 	}
-	wg.Wait()
-	// Perform calculation
 
-*/
+	// Grouped partitions are passed with the same type received
+	// All other partitions are sent back as PartitionFloat64
+	groupedPartitions := make([]p.Partition, len(pars))
+
+	// Aggregation index. Here because we need to know which elements to pull from the values as they arrive
+	aggIndex := make([]int, len(agg))
+
+	// Ensures grouped partitions are pushed to the left of the partitions
+	gCount := 0
+	for i, par := range pars {
+		grouped := false
+		for _, idx := range g {
+			if i == idx {
+				grouped = true
+				switch par.(type) {
+				case *p.PartitionBool:
+					groupedPartitions[gCount] = &p.PartitionBool{Ch: make(chan bool)}
+				case *p.PartitionString:
+					groupedPartitions[gCount] = &p.PartitionString{Ch: make(chan string)}
+				case *p.PartitionFloat64:
+					groupedPartitions[gCount] = &p.PartitionFloat64{Ch: make(chan float64)}
+				case *p.PartitionTime:
+					groupedPartitions[gCount] = &p.PartitionTime{Ch: make(chan time.Time)}
+				case *p.PartitionInterface:
+					groupedPartitions[gCount] = &p.PartitionInterface{Ch: make(chan interface{})}
+				}
+				gCount++
+				break
+			}
+		}
+		// If they are not grouped, then they are aggregated
+		if !grouped {
+			groupedPartitions[len(g)+i-gCount] = &p.PartitionFloat64{Ch: make(chan float64)}
+			aggIndex[i-gCount] = i
+		}
+	}
+
+	go func() {
+		type aggregatedRow struct {
+			groupedCols []interface{}
+			values      []float64
+			count       float64
+		}
+		// Groupings
+		m := make(map[string]*aggregatedRow)
+		values := make([]interface{}, len(groupedPartitions))
+		for _, p := range groupedPartitions {
+			defer p.CloseChannel()
+		}
+
+		// Read the values for each record
+		// Note: we cannot send anything until all the values have been read
+		for v := range pars[0].ReadAllValues() {
+			values[0] = v
+			var wg sync.WaitGroup
+			wg.Add(len(pars) - 1)
+			for i := 1; i < len(pars); i++ {
+				go func(p p.Partition, index int) {
+					values[index], _ = p.ReadValue() // read value as an interface
+					wg.Done()
+				}(pars[i], i)
+			}
+			wg.Wait() // wait for all channels to receive before moving on
+
+			// Build the map entry and store the grouped columns
+			var sb strings.Builder
+			for _, idx := range g {
+				sb.WriteString(fmt.Sprint(values[idx]))
+				sb.WriteString("|") // delimiter
+			}
+
+			key := sb.String()
+			if v, ok := m[key]; !ok {
+				// Store the column values that are being grouped
+				cols := make([]interface{}, len(g))
+				for i, idx := range g {
+					cols[i] = values[idx]
+				}
+				// Initial entries are populated with the first values available, or 1 if it is a count aggregation
+				aggValues := make([]float64, len(agg))
+				// If value is not numeric, it remains as float64 zero-value
+				for i, idx := range aggIndex {
+					var x float64
+					switch t := values[idx].(type) {
+					case int32:
+						x = float64(t)
+					case int64:
+						x = float64(t)
+					case float32:
+						x = float64(t)
+					case float64:
+						x = t
+					}
+					if agg[i] == "COUNT" {
+						aggValues[i] = 1
+					} else {
+						aggValues[i] = x
+					}
+				}
+				m[key] = &aggregatedRow{
+					groupedCols: cols,
+					values:      aggValues,
+					count:       1,
+				}
+
+				// If there is only one entry, then we need the count to be 1 here since it will not be seen again
+
+				// Entry already exists, perform aggregations
+			} else {
+				v.count++
+				for i, idx := range aggIndex {
+					// Cast values to float64 for performing operations
+					var x float64
+					switch t := values[idx].(type) {
+					case int32:
+						x = float64(t)
+					case int64:
+						x = float64(t)
+					case float32:
+						x = float64(t)
+					case float64:
+						x = t
+					}
+					// Perform aggregation
+					switch agg[i] {
+					case "AVG":
+						v.values[i] = ((v.values[i] * (v.count - 1)) + x) / v.count // TODO: this might be more efficient to store as a Running Sum instead
+					case "COUNT":
+						v.values[i] = v.count
+					case "MAX":
+						if x > v.values[i] {
+							v.values[i] = x
+						}
+					case "MIN":
+						if x < v.values[i] {
+							v.values[i] = x
+						}
+					case "SUM":
+						v.values[i] += x
+					}
+				}
+			}
+		}
+
+		// All values have been received and aggregated, send the results for each aggregated key to the channels
+		for k := range m {
+			var wg sync.WaitGroup
+			wg.Add(len(groupedPartitions))
+			for i := 0; i < len(groupedPartitions); i++ {
+				go func(idx int) {
+					// Send the grouped columns first
+					l := len(m[k].groupedCols)
+					if idx < l {
+						groupedPartitions[idx].SendValue(m[k].groupedCols[idx])
+					} else {
+						// Send the aggregated values
+						groupedPartitions[idx].SendValue(m[k].values[idx-l])
+					}
+					wg.Done()
+				}(i)
+			}
+			wg.Wait()
+		}
+	}()
+
+	return groupedPartitions, nil
+
+}
