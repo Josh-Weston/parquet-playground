@@ -496,6 +496,7 @@ func AddColumns(pars []p.Partition, idx []int) ([]p.Partition, error) {
 // Warning: GroupBy can be memory intensive if there are many items to GroupBy as the interim state is maintained in memory
 // TODO: This is a good opportunity to divide-and-conquer with a mapReduce() style implementation across multiple Go routines
 // TODO: Change aggregations to a const IOTA
+// Note: GroupBy() is a blocking operator (downstream operators cannot progress until GroupBy() has finished)
 func GroupBy(pars []p.Partition, g []int, agg []string) ([]p.Partition, error) {
 
 	if len(g)+len(agg) != len(pars) {
@@ -513,20 +514,20 @@ func GroupBy(pars []p.Partition, g []int, agg []string) ([]p.Partition, error) {
 	gCount := 0
 	for i, par := range pars {
 		grouped := false
-		for _, idx := range g {
+		for j, idx := range g {
 			if i == idx {
 				grouped = true
 				switch par.(type) {
 				case *p.PartitionBool:
-					groupedPartitions[gCount] = &p.PartitionBool{Ch: make(chan bool)}
+					groupedPartitions[j] = &p.PartitionBool{Ch: make(chan bool)}
 				case *p.PartitionString:
-					groupedPartitions[gCount] = &p.PartitionString{Ch: make(chan string)}
+					groupedPartitions[j] = &p.PartitionString{Ch: make(chan string)}
 				case *p.PartitionFloat64:
-					groupedPartitions[gCount] = &p.PartitionFloat64{Ch: make(chan float64)}
+					groupedPartitions[j] = &p.PartitionFloat64{Ch: make(chan float64)}
 				case *p.PartitionTime:
-					groupedPartitions[gCount] = &p.PartitionTime{Ch: make(chan time.Time)}
+					groupedPartitions[j] = &p.PartitionTime{Ch: make(chan time.Time)}
 				case *p.PartitionInterface:
-					groupedPartitions[gCount] = &p.PartitionInterface{Ch: make(chan interface{})}
+					groupedPartitions[j] = &p.PartitionInterface{Ch: make(chan interface{})}
 				}
 				gCount++
 				break
@@ -606,9 +607,6 @@ func GroupBy(pars []p.Partition, g []int, agg []string) ([]p.Partition, error) {
 					values:      aggValues,
 					count:       1,
 				}
-
-				// If there is only one entry, then we need the count to be 1 here since it will not be seen again
-
 				// Entry already exists, perform aggregations
 			} else {
 				v.count++
@@ -832,10 +830,12 @@ func Viewer(pars []p.Partition) error {
 	return nil
 }
 
-// Top returns the top n records ordered by idx
+// Top returns the top n records ordered by the index provided in either ascending or descending order
 // order >= 0 (desc), order < 0 (asc)
 // Warning: Top can be memory intensive if there are many items to return the interim state is maintained in memory
 // Top requires some limiting heuristic, otherwise it is just an ORDERBY operator
+// Note: Top() should be chained together if composite ORDERBY logic is required
+// Note: Top() is a blocking operator (downstream operators cannot progress until Top() has finished)
 func Top(pars []p.Partition, n int, idx int, order int) ([]p.Partition, error) {
 	topPars := make([]p.Partition, len(pars))
 	topValues := make([][]interface{}, n) // Note: value slices are instantiated when needed

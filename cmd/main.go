@@ -110,14 +110,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Add a viewer operator to just see what is going on
-
 	/************
 	GROUPING TEST
 	************/
-
 	// TODO: Deadlock when more than 1 groupby specified
-	groupedPartitions, err := t.GroupBy(calculatedPartitions, []int{3}, []string{"SUM", "SUM", "SUM", "SUM"})
+	groupedPartitions, err := t.GroupBy(calculatedPartitions, []int{3, 2}, []string{"SUM", "MAX", "AVG"})
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
@@ -144,7 +141,7 @@ func main() {
 	/********
 	TOP TEST
 	*********/
-	topPartitions, err := t.Top(takePartitions, 10, 1, 0)
+	topPartitions, err := t.Top(takePartitions, 10, 4, 0)
 	if err != nil {
 		log.Println(err)
 		os.Exit(1)
@@ -157,84 +154,4 @@ func main() {
 
 	// TODO: The final output always needs to be a view or a streamed response to somewhere. For now just make it a view
 
-	/*
-		var wg sync.WaitGroup
-		// multiplexStream := make(chan float64)
-		// defer close(multiplexStream)
-		multiplex := func(p *p.PartitionFloat64, i int) {
-			defer wg.Done()
-			for val := range p.Ch {
-				fmt.Printf("Column Index: %d, Value: %.0f\n", i, val)
-			}
-		}
-
-		// Cast to proper for easier access
-		// chTyped := make([]chan float64, 0)
-		// for _, c := range ch {
-		// 	v, ok := c.(chan float64)
-		// 	if !ok {
-		// 		log.Println("We have a problem here")
-		// 	} else {
-		// 		chTyped = append(chTyped, v)
-		// 	}
-		// }
-
-
-		// wg.Add(len(partitions))
-		for i, par := range partitions {
-			if par64, ok := par.(*p.PartitionFloat64); ok {
-				wg.Add(1)
-				go multiplex(par64, i)
-			}
-
-			if parTime, ok := par.(*p.PartitionTime); ok {
-				for time := range parTime.Ch {
-					fmt.Printf("ModifiedDate: %s\n", time.String())
-				}
-			}
-
-			// Would want a for-select here if I need to operate on the values at the same time (e.g., an add operation)
-		}
-
-		wg.Wait()
-	*/
-	// At this point, we have a number of channels from the column indexes. We don't know what the column types
-	// are, so we can't pass them around other than as interfaces (at this point)
-
-	// 1) Keep passing them around as interfaces
-	// 2) Cast them and send them on their way
-
-	// addStream, err := a.AddInt32(ch...)
-	// if err != nil {
-	// 	log.Println(err)
-	// 	os.Exit(1)
-	// }
-
 }
-
-// The design pattern we are likely looking for here
-
-/*
-
-// fanIn runs multiple goroutines and pushes their output onto a single channel
-fanIn := func(finders ...<-chan int) <-chan int {
-	var wg sync.WaitGroup
-	multiplexStream := make(chan int)
-	multiplex := func(finder <-chan int) {
-		defer wg.Done()
-		for primeNumber := range finder {
-			multiplexStream <- primeNumber
-		}
-	}
-	wg.Add(len(finders))
-	for _, c := range finders {
-		go multiplex(c)
-	}
-	go func() {
-		wg.Wait()
-		close(multiplexStream)
-	}()
-	return multiplexStream
-}
-
-*/
