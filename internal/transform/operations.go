@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	p "github.com/josh-weston/parquet-playground/internal/parquet"
@@ -663,7 +666,264 @@ func GroupBy(pars []p.Partition, g []int, agg []string) ([]p.Partition, error) {
 			wg.Wait()
 		}
 	}()
-
 	return groupedPartitions, nil
+}
 
+// Snapshots are written to a temporary file. They are derived from the operator sequence and can be used during
+// development
+// 1. Snapshots can only be used in development
+// 2. Cannot publish with a snapshot as the final output
+// 3. All snapshots are disabled in production
+// 4. Snapshots require access to the local disk
+
+// Snapshots are saved as parquet files? They should be saved as a DHD (whatever this struct represents)
+
+/*
+func SnapShot(pars []p.Partition) {
+	const padding = 3
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, padding, ' ', 0) // 0 = align left
+
+	// Our output header
+	var s string = "\n\t"
+	var u string = "\t"
+	for i := range pars {
+		s += fmt.Sprintf("Col-%d\t", i+1)
+		u += "----------\t"
+	}
+	fmt.Fprintln(w, s)
+	fmt.Fprintln(w, u)
+
+	// Build the output string
+	var sb strings.Builder
+	count := 0 // writes the row index surrogate
+
+	// Ensures values are output in the proper order
+	values := make([]interface{}, len(pars))
+
+	if passThrough {
+		nextPars := make([]p.Partition, len(pars))
+		values := make([]interface{}, len(pars))
+
+		// spin-up our new channels
+		// TODO: This will likely be a popular function for me
+		for i, par := range pars {
+			switch par.(type) {
+			case *p.PartitionBool:
+				nextPars[i] = &p.PartitionBool{Ch: make(chan bool)}
+			case *p.PartitionString:
+				nextPars[i] = &p.PartitionString{Ch: make(chan string)}
+			case *p.PartitionFloat64:
+				nextPars[i] = &p.PartitionFloat64{Ch: make(chan float64)}
+			case *p.PartitionTime:
+				nextPars[i] = &p.PartitionTime{Ch: make(chan time.Time)}
+			case *p.PartitionInterface:
+				nextPars[i] = &p.PartitionInterface{Ch: make(chan interface{})}
+			}
+		}
+
+		go func() {
+			for v := range pars[0].ReadAllValues() {
+				count++
+				sb.WriteString(fmt.Sprintf("[%d]\t", count))
+				sb.WriteString(fmt.Sprint(v, "\t"))
+				values[0] = v
+				var wg sync.WaitGroup
+				wg.Add(len(pars))
+				for i := 0; i < len(pars); i++ {
+					// We already have the first value
+					if i == 0 {
+						go func() {
+							nextPars[0].SendValue(values[0])
+							wg.Done()
+						}()
+					} else {
+						go func(p p.Partition, idx int) {
+							value, _ := p.ReadValue() // read value from channel
+							values[idx] = value
+							wg.Done()
+						}(pars[i], i)
+					}
+				}
+				wg.Wait() // wait for all channels to receive before writing to the console
+				for i := range values {
+					sb.WriteString(fmt.Sprint(values[i], "\t"))
+				}
+				fmt.Fprintln(w, sb.String())
+				sb.Reset()
+			}
+			fmt.Fprintln(w)
+			w.Flush()
+		}()
+		return nextPars, nil
+		// If just viewing the values, we do not need to pass-through (end of the the road)
+	} else {
+		for v := range pars[0].ReadAllValues() {
+			count++
+			sb.WriteString(fmt.Sprintf("[%d]\t", count))
+			sb.WriteString(fmt.Sprint(v, "\t"))
+			values[0] = v
+			var wg sync.WaitGroup
+			wg.Add(len(pars) - 1)
+			for i, l := 1, len(pars); i < l; i++ {
+				go func(p p.Partition, idx int) {
+					values[idx], _ = p.ReadValue()
+					wg.Done()
+				}(pars[i], i)
+			}
+			wg.Wait() // wait for all channels to receive before writing to the console
+			for i := range values {
+				sb.WriteString(fmt.Sprint(values[i], "\t"))
+			}
+			fmt.Fprintln(w, sb.String())
+			sb.Reset()
+		}
+		fmt.Fprintln(w)
+		w.Flush()
+		return nil, nil
+	}
+}
+
+*/
+
+// Viewer is an output type that logs the output to STDOUT if using the console, or to the UI if using the application
+func Viewer(pars []p.Partition) error {
+
+	const padding = 3
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, padding, ' ', 0) // 0 = align left
+
+	// Our output header
+	var s string = "\n\t"
+	var u string = "\t"
+	for i := range pars {
+		s += fmt.Sprintf("Col-%d\t", i+1)
+		u += "----------\t"
+	}
+	fmt.Fprintln(w, s)
+	fmt.Fprintln(w, u)
+
+	// Build the output string
+	var sb strings.Builder
+	count := 0 // writes the row index surrogate
+
+	// Ensures values are output in the proper order
+	values := make([]interface{}, len(pars))
+
+	for v := range pars[0].ReadAllValues() {
+		count++
+		values[0] = v
+		var wg sync.WaitGroup
+		wg.Add(len(pars) - 1)
+		for i, l := 1, len(pars); i < l; i++ {
+			go func(p p.Partition, idx int) {
+				values[idx], _ = p.ReadValue()
+				wg.Done()
+			}(pars[i], i)
+		}
+		wg.Wait()                                    // wait for all channels to receive before writing to the console
+		sb.WriteString(fmt.Sprintf("[%d]\t", count)) // print the surrogate row number
+		for i := range values {
+			sb.WriteString(fmt.Sprint(values[i], "\t"))
+		}
+		fmt.Fprintln(w, sb.String())
+		sb.Reset()
+	}
+	fmt.Fprintln(w)
+	w.Flush()
+	return nil
+}
+
+// Top returns the top n records ordered by idx
+// order >= 0 (desc), order < 0 (asc)
+// Warning: Top can be memory intensive if there are many items to return the interim state is maintained in memory
+// Top requires some limiting heuristic, otherwise it is just an ORDERBY operator
+func Top(pars []p.Partition, n int, idx int, order int) ([]p.Partition, error) {
+	topPars := make([]p.Partition, len(pars))
+	topValues := make([][]interface{}, n) // Note: value slices are instantiated when needed
+	count := 0
+
+	// spin-up our new channels
+	// TODO: This will likely be a popular function for me
+	for i, par := range pars {
+		switch par.(type) {
+		case *p.PartitionBool:
+			topPars[i] = &p.PartitionBool{Ch: make(chan bool)}
+		case *p.PartitionString:
+			topPars[i] = &p.PartitionString{Ch: make(chan string)}
+		case *p.PartitionFloat64:
+			topPars[i] = &p.PartitionFloat64{Ch: make(chan float64)}
+		case *p.PartitionTime:
+			topPars[i] = &p.PartitionTime{Ch: make(chan time.Time)}
+		case *p.PartitionInterface:
+			topPars[i] = &p.PartitionInterface{Ch: make(chan interface{})}
+		}
+	}
+
+	go func() {
+		values := make([]interface{}, len(pars))
+		for _, p := range topPars {
+			defer p.CloseChannel()
+		}
+		for v := range pars[0].ReadAllValues() {
+			values[0] = v
+			var wg sync.WaitGroup
+			wg.Add(len(pars) - 1)
+			for i, l := 1, len(pars); i < l; i++ {
+				go func(p p.Partition, idx int) {
+					values[idx], _ = p.ReadValue()
+					wg.Done()
+				}(pars[i], i)
+			}
+			wg.Wait()
+
+			// If first value is not populated, then just populate it and move on
+			if count == 0 {
+				topValues[0] = make([]interface{}, len(pars))
+				copy(topValues[0], values)
+				count++
+				// Otherwise perform comparison
+			} else {
+				var o Operation = Gt
+				if order < 0 {
+					o = Lt
+				}
+				if CheckCondition(topValues[count-1][idx], values[idx], o) {
+					// If we have room at the back then just place it there, otherwise ignore it
+					if count < n {
+						topValues[count] = make([]interface{}, len(pars))
+						copy(topValues[count], values)
+						count++
+					}
+					// The value belongs in the list, we need to determine where
+				} else {
+					// Find the index to insert it
+					idx := sort.Search(count, func(i int) bool {
+						return CheckCondition(values[idx], topValues[i][idx], o)
+					})
+					if idx < count {
+						// Insert the new values at the appropriate index
+						copy(topValues[idx+1:], topValues[idx:])
+						topValues[idx] = make([]interface{}, len(values)) // overwrite index because copy operation above creates a circular reference
+						copy(topValues[idx], values)
+						if count < n {
+							count++
+						}
+					}
+				}
+			}
+		}
+
+		// Pipe the top values to our channels
+		for i, l := 0, count; i < l; i++ {
+			var wg sync.WaitGroup
+			wg.Add(len(topValues[i]))
+			for j, k := 0, len(topValues[i]); j < k; j++ {
+				go func(valIdx, idx int) {
+					topPars[idx].SendValue(topValues[valIdx][idx])
+					wg.Done()
+				}(i, j)
+			}
+			wg.Wait()
+		}
+	}()
+	return topPars, nil
 }

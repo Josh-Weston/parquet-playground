@@ -1,12 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
-	"strings"
-	"sync"
-	"text/tabwriter"
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
@@ -17,6 +13,8 @@ import (
 
 // TODO: Might want my own partition type to simplify these operations, do a DHD will consist of
 // a slice of partitions, and the partitions will have their own properties to inspect
+
+// TODO: each time we run the pipeline we will need to give it a UUID to differentiate the snapshots
 
 // top returns the first n rows from the partition
 // func top(p interface{}) interface{} {
@@ -143,46 +141,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	/********
+	TOP TEST
+	*********/
+	topPartitions, err := t.Top(takePartitions, 10, 1, 0)
+	if err != nil {
+		log.Println(err)
+		os.Exit(1)
+	}
+
 	/**************
-	READ PARTITIONS
+	VIEW PARTITIONS
 	***************/
-	const padding = 3
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, padding, ' ', 0) // 0 = align left
+	t.Viewer(topPartitions)
 
-	// Our output header
-	var s string = "\n"
-	var u string = ""
-	s += "\t"
-	u += "\t"
-	for i := range takePartitions {
-		s += fmt.Sprintf("Col-%d\t", i+1)
-		u += "----------\t"
-	}
-	fmt.Fprintln(w, s)
-	fmt.Fprintln(w, u)
-
-	// Our output values (cast to string)
-	values := make([]string, len(takePartitions)+1) // add one for when we show the surrogate row index
-	count := 0
-	// Read my taken values
-	for v := range takePartitions[0].ReadAllValues() {
-		count++
-		values[0] = fmt.Sprintf("[%d]", count)
-		values[1] = fmt.Sprint(v)
-		var wg sync.WaitGroup
-		wg.Add(len(takePartitions) - 1)
-		for i, l := 1, len(takePartitions); i < l; i++ {
-			go func(p p.Partition, index int) {
-				val, _ := p.ReadValue() // read value as an interface
-				values[index+1] = fmt.Sprint(val)
-				wg.Done()
-			}(takePartitions[i], i)
-		}
-		wg.Wait() // wait for all channels to receive before writing to the console
-		fmt.Fprintln(w, strings.Join(values, "\t"))
-	}
-	fmt.Fprintln(w)
-	w.Flush()
+	// TODO: The final output always needs to be a view or a streamed response to somewhere. For now just make it a view
 
 	/*
 		var wg sync.WaitGroup
